@@ -1,0 +1,189 @@
+{
+    "$schema": "http://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+       
+    },
+    "variables": {
+		"uniqueID": "[uniqueString(subscription().subscriptionId, resourceGroup().id, deployment().name)]",
+        "apimName": "[concat('apimL200-', variables('uniqueID'))]",
+        "nsgName": "[concat('nsg-', variables('uniqueID'))]",
+        "rtName": "[concat('rt-', variables('uniqueID'))]",
+        "dnsName": "azure-api.net",
+		"dnsRecordName": "[concat('azure-api.net', '/apimL200-', variables('uniqueID'), '.developer')]",
+        "vnetName": "[concat('vnet-', variables('uniqueID'))]",
+        "vnetAddressPrefix": "10.0.0.0/16",
+        "subnetName": "default",
+        "subnetAddressPrefix": "10.0.1.0/24",
+        "vnetID": "[resourceId('Microsoft.Network/virtualNetworks',variables('vnetName'))]",
+        "subnetRef": "[concat(variables('vnetID'),'/subnets/', variables('subnetName'))]"
+    },
+    "resources": [
+                {
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "2024-05-01",
+            "name": "[variables('nsgName')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "zerotrust",
+                        "properties": {
+                            "description": "",
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "3443",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Deny",
+                            "priority": 1000,
+                            "direction": "Inbound"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "type": "Microsoft.Network/routeTables",
+            "apiVersion": "2024-05-01",
+            "name": "[variables('rtName')]",
+            "location": "[resourceGroup().location]",
+			"dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups/', variables('nsgName'))]"
+            ],
+            "properties": {
+              "disableBgpRoutePropagation": "true",
+              "routes": [
+                {
+                  "name": "default-route",
+                  "properties": {
+                    "addressPrefix": "0.0.0.0/0",
+                    "hasBgpOverride": "false",
+                    "nextHopIpAddress": "10.10.10.10",
+                    "nextHopType": "VirtualAppliance"
+                  },
+                  "type": "Microsoft.Network/routeTables/routes"
+                }
+              ]
+            }
+          },
+          {
+            "type": "Microsoft.Network/privateDnsZones",
+            "apiVersion": "2024-06-01",
+            "name": "[variables('dnsName')]",
+            "location": "global",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks/', variables('vnetName'))]"
+            ],
+            "properties": {},
+            "resources": [{
+            "type": "virtualNetworkLinks",
+            "apiVersion": "2024-06-01",
+            "name": "linkToVNET",
+            "location": "global",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+                "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsName'))]"
+            ],
+            "properties": {
+              "registrationEnabled": "false",
+              "virtualNetwork": {
+                "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+              }
+            }
+          }
+		  ]
+          },
+		  {
+            "type": "Microsoft.Network/privateDnsZones/A",
+            "apiVersion": "2024-06-01",
+		  "name": "[variables('dnsRecordName')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsName'))]"
+            ],
+            "properties": {
+                "ttl": 3600,
+                "aRecords": [
+                    {
+                        "ipv4Address": "192.168.0.43"
+                    }
+                ]
+            }
+        },
+          
+        {
+            "type": "Microsoft.Network/virtualNetworks",
+            "apiVersion": "2024-05-01",
+            "name": "[variables('vnetName')]",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]",
+                "[resourceId('Microsoft.Network/routeTables', variables('rtName'))]"
+            ],
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[variables('vnetAddressPrefix')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('subnetName')]",
+                        "properties": {
+                            "addressPrefix": "[variables('subnetAddressPrefix')]",
+                            "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+                            },
+                            "routeTable": {
+                                "id": "[resourceId('Microsoft.Network/routeTables', variables('rtName'))]"
+                            },
+							"serviceEndpoints": [
+                                {
+                                    "service": "Microsoft.Storage",
+                                    "locations": [
+                                        "[resourceGroup().location]"
+                                    ]
+                                },
+                                {
+                                    "service": "Microsoft.Sql",
+                                    "locations": [
+                                        "[resourceGroup().location]"
+                                    ]
+                                },
+                                {
+                                    "service": "Microsoft.KeyVault",
+                                    "locations": [
+                                        "*"
+                                    ]
+                                }
+                            ]
+
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "type": "Microsoft.ApiManagement/service",
+            "apiVersion": "2024-05-01",
+            "name": "[variables('apimName')]",
+            "location": "[resourceGroup().location]",
+			"dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', variables('dnsName'))]"
+            ],
+            "tags": {},
+            "sku": {
+                "capacity": 1,
+                "name": "Developer"
+            },
+            "properties": {
+                "publisherEmail": "apim@microsoft.com",
+                "publisherName": "DEV DEV team",
+                "virtualNetworkType": "Internal",
+					"virtualNetworkConfiguration": {
+					  "subnetResourceId": "[variables('subnetRef')]"
+					}	
+            }
+        }
+    ]
+}
